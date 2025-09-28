@@ -1,12 +1,17 @@
 import time
 import csv
 from urllib.parse import urljoin
-
+import re
 import requests
 from bs4 import BeautifulSoup
 
 BASE = "https://books.toscrape.com/"
 HEADERS = {"User-Agent": "Mozilla/5.0 "}
+
+def get_soup(url: str) :
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    r.raise_for_status() # Check error 
+    return BeautifulSoup(r.text, "html.parser")
 
 def get_categories():
     soup = get_soup(BASE)
@@ -17,12 +22,6 @@ def get_categories():
         if "catalogue/category" in href:
             cats.append((a.get_text(strip=True), urljoin(BASE, href)))
     return cats
-
-def get_soup(url: str) :
-    r = requests.get(url, headers=HEADERS, timeout=20)
-    r.raise_for_status() # Check error 
-    return BeautifulSoup(r.text, "html.parser")
-
 def parse_price(text: str):
     digits = "".join(ch for ch in text if ch.isdigit() or ch == ".") # Use regexp next
     return float(digits) if digits else None
@@ -37,7 +36,7 @@ def parse_rating(star_div) :
             return v
     return None
 
-def scrape_category(cat_name: str, cat_url: str):
+def scrape_category(cat_name, cat_url):
     rows = []
     url = cat_url
     while url:
@@ -46,30 +45,40 @@ def scrape_category(cat_name: str, cat_url: str):
             a = li.select_one("h3 a")   
             title = a.get("title", "").strip()
             rel_link = a.get("href", "")
-            detail_url = urljoin(urljoin(BASE, "catalogue/"), rel_link)
+            detail_url = urljoin(urljoin(BASE, "catalogue/"), rel_link[9:])
 
             price_el = li.select_one(".price_color")
             price = parse_price(price_el.get_text(strip=True)) if price_el else None
 
             rating = parse_rating(li.select_one(".star-rating"))
-
             availability = li.select_one(".availability").get_text(strip=True)
+            if availability=="In stock":
+                time.sleep(0.1) # connection so politeness
+                in_stock=scrape_n_in_stock(detail_url)
+            else:
+                in_stock=0
 
             rows.append({
                 "category": cat_name,
                 "title": title,
                 "price": price,
                 "rating": rating,
-                "availability": availability,
+                "n_available": in_stock,
                 "detail_url": detail_url
             })
 
-        # pagination: look for "li.next a"
+        # pagination: look for "li.next a":go to the next li in the list and get url
         next_a = soup.select_one("li.next a")
         url = urljoin(url, next_a.get("href")) if next_a else None
-
-        time.sleep(0.3)  # be polite
+        time.sleep(0.3)
     return rows
+def scrape_n_in_stock(book_url):
+    soup = get_soup(book_url)
+    i=soup.select_one(".instock.availability")
+    text=i.get_text(strip=True)
+    reg=re.search(r"\(([0-9]+) available\)",text)
+    in_stock=int(reg.group(1)) if reg else None
+    return in_stock
 
 
 
@@ -80,11 +89,13 @@ def main():
 
     all_rows: list[dict] = []
     for name, url in categories:
+        if name== "Books":
+            continue
         print(f"{name}")
         all_rows.extend(scrape_category(name, url))
 
-    out_path = "./data/books_simple.csv"
-    fieldnames = ["category", "title", "price", "rating", "availability", "detail_url"]
+    out_path = "./data/books_data.csv"
+    fieldnames = ["category", "title", "price", "rating", "n_available", "detail_url"]
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -92,5 +103,5 @@ def main():
 
     print(f"Saved {len(all_rows)} rows → {out_path}")
 
-if __name__ == "__main__":
+if __name__ == "__main__": # In case code was imported 
     main()
